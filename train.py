@@ -5,25 +5,27 @@ matplotlib.use("Agg")
 import os
 from config import config
 from core.callbacks import TrainingMonitor
-from core.callbacks import Checkpoint
 from core.io import HDF5Reader
 from core.nn import ResNet
 from core.preprocessing import MeanSubtraction
 from core.preprocessing import Resize
 from core.preprocessing import ToArray
 from tensorflow.keras import backend as K
+from tensorflow.keras.callbacks import LearningRateScheduler
 from tensorflow.keras.models import load_model
 from tensorflow.keras.optimizers import SGD
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
-def main():
+EPOCHS = 75
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default=None, help="Path to specific model")
-    parser.add_argument("--start", type=int, default=0, help="Epoch to restart training")
-    parser.add_argument("--epochs", type=int, default=50, help="Number of epochs to train")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
-    args = parser.parse_args()
+def poly_decay(epoch):
+    epochs = EPOCHS
+    init_lr = 1e-1
+    power = 1.0
+    lr = init_lr * (1 - (epoch / float(epochs))) ** power
+    return lr
+
+def main():
 
     # Define preprocessors
     means = json.loads(open(config.MEAN_PATH).read())
@@ -55,32 +57,19 @@ def main():
         classes=config.NUM_CLASSES
     )
 
-    # Build/Load model
-    if args.model:
-        print(f"[INFO] Loading model from {args.model} ...")
-        model = load_model(args.model)
 
-        # Update learning rate
-        print(f"[INFO] Old learning rate: {K.get_value(model.optimizer.lr)}")
-        K.set_value(model.optimizer.lr, args.lr)
-        print(f"[INFO] New learning rate: {K.get_value(model.optimizer.lr)}")
-
-    else:
-        print("[INFO] Compiling model ...")
-        optimizer = SGD(lr=args.lr, momentum=0.9)
-        model = ResNet.build(64, 64, 3, classes=config.NUM_CLASSES, stages=(3, 4, 6), filters=(64, 128, 256, 512), reg=0.005)
-        model.compile(loss="categorical_crossentropy", optimizer=optimizer, metrics=["accuracy"])
+    print("[INFO] Compiling model ...")
+    optimizer = SGD(lr=1e-1, momentum=0.9)
+    model = ResNet.build(64, 64, 3, classes=config.NUM_CLASSES, stages=(3, 4, 6), filters=(64, 128, 256, 512), reg=0.005)
+    model.compile(loss="categorical_crossentropy", optimizer=optimizer, metrics=["accuracy"])
 
     # Training monitor
-    training_monitor = TrainingMonitor(config.FIG_PATH, json_path=config.JSON_PATH, start=args.start)
-    # Check point
-    os.makedirs(f"{config.OUTPUT_PATH}/checkpoints", exist_ok=True)
-    checkpoint = Checkpoint(f"{config.OUTPUT_PATH}/checkpoints", start=args.start)
-    callbacks = [training_monitor, checkpoint]
+    training_monitor = TrainingMonitor(config.FIG_PATH, json_path=config.JSON_PATH)
+    callbacks = [training_monitor, LearningRateScheduler(poly_decay)]
 
     model.fit(
         train_gen.generator(),
-        epochs=args.epochs,
+        epochs=EPOCHS,
         steps_per_epoch=train_gen.num_images // 64,
         validation_data=valid_gen.generator(),
         validation_steps=valid_gen.num_images // 64,
@@ -88,6 +77,8 @@ def main():
         callbacks=callbacks,
         verbose=1
     )
+
+    model.save(config.MODEL_PATH)
 
     train_gen.close()
     valid_gen.close()
